@@ -11,23 +11,30 @@ namespace TinHovers
     /// <summary>
     /// A PID (Proportional-Integral-Derivative) controller for managing control systems.
     /// </summary>
+    /// <summary>
+    /// A PID controller implementation suitable for hover thrust control.
+    /// Error should be the difference between the target and current measurement.
+    /// 
+    /// Kp: proportional gain
+    /// Ki: integral gain
+    /// Kd: derivative gain
+    ///
+    /// Integral is computed over time, derivative is computed based on error change per unit time.
+    /// stepsPerSecond should match your update rate (e.g., 60 for 60 ticks/sec).
+    ///
+    /// integralUpperLimit and integralLowerLimit can be used to prevent integral windup.
+    /// </summary>
     public class PIDController
     {
-        // Proportional, Integral, and Derivative gains
         private readonly double _proportionalGain;
         private readonly double _integralGain;
         private readonly double _derivativeGain;
-
-        // Integral term and last input value
-        private double _integral;
-        private double _previousInput;
-
-        // Integral term limits
         private readonly double _integralUpperLimit;
         private readonly double _integralLowerLimit;
-
-        // Number of control steps per second
         private readonly double _stepsPerSecond;
+
+        private double _integral;
+        private double _previousError;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="PIDController"/> class with specified gains and integral limits.
@@ -35,69 +42,55 @@ namespace TinHovers
         /// <param name="proportionalGain">Proportional gain (Kp)</param>
         /// <param name="integralGain">Integral gain (Ki)</param>
         /// <param name="derivativeGain">Derivative gain (Kd)</param>
-        /// <param name="integralUpperLimit">Optional upper limit for the integral term (default is 0, meaning no limit)</param>
-        /// <param name="integralLowerLimit">Optional lower limit for the integral term (default is 0, meaning no limit)</param>
-        /// <param name="stepsPerSecond">Number of control steps executed per second (default is 60)</param>
+        /// <param name="integralUpperLimit">Optional upper limit for the integral term (0 means no limit)</param>
+        /// <param name="integralLowerLimit">Optional lower limit for the integral term (0 means no limit)</param>
         public PIDController(
             double proportionalGain,
             double integralGain,
             double derivativeGain,
             double integralUpperLimit = 0,
-            double integralLowerLimit = 0,
-            float stepsPerSecond = 60f)
+            double integralLowerLimit = 0)
         {
             _proportionalGain = proportionalGain;
             _integralGain = integralGain;
             _derivativeGain = derivativeGain;
             _integralUpperLimit = integralUpperLimit;
             _integralLowerLimit = integralLowerLimit;
-            _stepsPerSecond = stepsPerSecond;
             _integral = 0;
-            _previousInput = 0;
+            _previousError = 0;
         }
 
         /// <summary>
-        /// Computes the PID controller output based on the current input.
+        /// Computes the PID controller output based on the current error.
+        /// error = (target - current)
         /// </summary>
-        /// <param name="input">The current input value to the controller.</param>
-        /// <param name="decimalPrecision">Number of decimal places to round the input value.</param>
+        /// <param name="error">The current error value for the controller.</param>
         /// <returns>The computed PID output.</returns>
-        public double Compute(double input, int decimalPrecision)
+        public double Compute(double error, double deltaTime)
         {
-            // Round the input to the specified decimal precision
-            double roundedInput = Math.Round(input, decimalPrecision);
+            // Update integral with actual elapsed time
+            _integral += error * deltaTime;
 
-            // Update the integral term with the current input
-            _integral += input / _stepsPerSecond;
+            // Compute derivative based on error change per elapsed time
+            double derivative = (error - _previousError) / deltaTime;
 
-            // Clamp the integral term within the specified limits, if any
-            if (_integralUpperLimit > 0 && _integral > _integralUpperLimit)
-            {
-                _integral = _integralUpperLimit;
-            }
-            if (_integralLowerLimit < 0 && _integral < _integralLowerLimit)
-            {
-                _integral = _integralLowerLimit;
-            }
+            _previousError = error;
 
-            // Calculate the derivative term based on the change in input
-            double derivative = (_previousInput - roundedInput) * _stepsPerSecond;
-            _previousInput = roundedInput;
-
-            // Compute the PID output
-            double output = (_proportionalGain * input) + (_integralGain * _integral) + (_derivativeGain * derivative);
+            double output = (_proportionalGain * error)
+                            + (_integralGain * _integral)
+                            + (_derivativeGain * derivative);
 
             return output;
         }
 
+
         /// <summary>
-        /// Resets the PID controller by clearing the integral and previous input.
+        /// Resets the PID controller by clearing the integral and previous error.
         /// </summary>
         public void Reset()
         {
             _integral = 0;
-            _previousInput = 0;
+            _previousError = 0;
         }
     }
-
 }

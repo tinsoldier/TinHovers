@@ -6,6 +6,6 @@
     /// </summary>
     public interface IHoverThrustController
     {
-        float CalculateThrustMultiplier(float heightError, float heightDeltaError);
+        float CalculateThrustMultiplier(double heightError, double deltaTime);
     }
 }

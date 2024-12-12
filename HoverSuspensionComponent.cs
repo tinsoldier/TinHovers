@@ -23,17 +23,19 @@ using VRage;
 using VRage.Utils;
 using VRage.Sync;
 using static VRageRender.Utils.MyWingedEdgeMesh;
+using Sandbox.Game.World;
 
 namespace TinHovers
 {
     [MyEntityComponentDescriptor(typeof(MyObjectBuilder_Thrust), false,
-                                 "LargeGaalsienAtmosphericHoverEngine_LargeBlock",
-                                 "LargeGaalsienArrayAtmosphericHoverEngine_LargeBlock",
-                                 "HugeGaalsienAtmosphericHoverEngine_LargeBlock"
+                                 "LargeGaalsienHoverSuspension_LargeBlock",
+                                 "LargeGaalsienArrayHoverSuspension_LargeBlock",
+                                 "HugeGaalsienHoverSuspension_LargeBlock"
                                 )]
     public partial class HoverSuspensionComponent : MyGameLogicComponent
     {
         private bool _init = false;
+        private bool _initShowstate = false;
 
         private IMyThrust _block;
         private MyObjectBuilder_EntityBase _objectBuilder;
@@ -48,6 +50,9 @@ namespace TinHovers
         private float _thrustMax;
 
         private bool _seesaw;
+        private int _tickCounter = 0;
+        private int _lastGroundRaycastAtTick = 0;
+
         private bool _collisionAlert;
         private bool _hit1OwnGrid;
         private bool _hit2OwnGrid;
@@ -88,8 +93,10 @@ namespace TinHovers
         #endregion
 
         // Current chosen controller (could be changed at runtime or configured)
-        private IHoverThrustController _thrustController = new BangBangThrustController();
+        //private IHoverThrustController _thrustController = new BangBangThrustController();
         private float _maxHoverRange = 30;
+
+        private IHoverThrustController _thrustController = new PIDHoverThrustController(new PIDController(0.5, 0.01, 0.05, 0.5, -0.5), 4f, 0f);
 
         public void BlockUpdate()
         {
@@ -161,13 +168,15 @@ namespace TinHovers
             }
 
             // Perform raycasting logic
+            _tickCounter++;
             if (_seesaw && _groundRaycastInterval-- <= 0)
             {
                 // Ground detection raycast
                 _groundRaycastInterval = 0; // Reset and prevent negative values
-
-                var groundForce = CalculateGroundForce(grid, downDirection, speed, out var validSurface, out var distanceToSurface, out var groundRatio);
+                var deltaTime = (_tickCounter - _lastGroundRaycastAtTick) / 60f;
+                var groundForce = CalculateGroundForce(grid, downDirection, speed, deltaTime, out var validSurface, out var distanceToSurface, out var groundRatio);
                 _lastGroundForce = groundForce;
+                _lastGroundRaycastAtTick = _tickCounter;
                 _block.ThrustMultiplier = groundRatio; // Limit lateral thrust based on ground ratio (far from ground, less lateral thrust)
 
                 if (validSurface)
@@ -298,7 +307,7 @@ namespace TinHovers
         /// Calculates thrust in newtons to apply to the grid to keep it at the target height IFF the hover block is above a valid surface.
         /// </summary>
         /// <returns>Thrust force that should be applied in newtons</returns>
-        private float CalculateGroundForce(MyCubeGrid grid, Vector3D downDirection, float speed, out bool succesfulRaycast, out float distanceToSurface, out float groundRatio)
+        private float CalculateGroundForce(MyCubeGrid grid, Vector3D downDirection, float speed, float deltaTime, out bool succesfulRaycast, out float distanceToSurface, out float groundRatio)
         {
             succesfulRaycast = TryGroundRaycast(grid, downDirection, out distanceToSurface, out groundRatio);
             if (!succesfulRaycast)
@@ -307,15 +316,15 @@ namespace TinHovers
                 _hit1LastCast = false;
                 return 0f;
             }
-
+            
             //Successfully hit a hoverable surface
             _hit1LastCast = true;
             _previousDownwardDistance = distanceToSurface; // Store the distance for next tick
 
             float heightError = _recalculatedTargetHeight - distanceToSurface;
             float deltaError = distanceToSurface - _previousDownwardDistance; // Change in distance since last tick
-
-            var forceMultiplier = _thrustController.CalculateThrustMultiplier(heightError, deltaError);
+            
+            var forceMultiplier = _thrustController.CalculateThrustMultiplier(heightError, deltaTime); //TODO delta time makes sense for a PID, but we're applying forces every tick even if the controller is only running periodically?
             return _block.MaxThrust * forceMultiplier;
         }
 
@@ -452,29 +461,33 @@ namespace TinHovers
             if (_smoothedTargetHeight < 0) _smoothedTargetHeight = 0;
         }
 
+        public override void UpdateBeforeSimulation()
+        {
+            base.UpdateBeforeSimulation();
+        }
+
         // Gamelogic update (each frame after simulation)
         public override void UpdateAfterSimulation()
         {
             if (_block == null || _block.MarkedForClose || _block.Closed) return;
-            //MyAPIGateway.Utilities.ShowMessage("HE", "Na:"+block.CustomName+" Co:"+m_color1+" ID:"+block.EntityId+" lastmessage:"+messagecontent);
 
             if (!_init)
             {
                 Init(null);
                 return;
             }
-            //if (!initShowstate)
-            //{
-            //    Showstate();
-            //    initShowstate = true;
-            //}
+            if (!_initShowstate)
+            {
+                Showstate();
+                _initShowstate = true;
+            }
 
             //fix for not changing color after welding
-            //if (Showstatenextframe)
-            //{
-            //    Showstatenextframe = false;
-            //    Showstate();
-            //}
+            if (ShowStateNextFrame)
+            {
+                ShowStateNextFrame = false;
+                Showstate();
+            }
 
             if (!_block.IsWorking) return; // no update if block down, off or damaged
 
@@ -490,40 +503,61 @@ namespace TinHovers
 
             if (_block == null) return;
 
-            //_block.IsWorkingChanged += Block_IsWorkingChanged;
-            //_block.EnabledChanged += BlockOnEnabledChanged;
-            //_block.AppendingCustomInfo += CustomInfo; //11-2019
+            _block.IsWorkingChanged += Block_IsWorkingChanged;
+            _block.EnabledChanged += BlockOnEnabledChanged;
+            _block.AppendingCustomInfo += CustomInfo; //11-2019
 
             if (MyAPIGateway.Session == null) return;
 
             _init = true;
-            //m_isserver = MyAPIGateway.Utilities.IsDedicated || MyAPIGateway.Multiplayer.IsServer;
 
             switch (_block.BlockDefinition.SubtypeId)
             {
 
-                case "LargeGaalsienAtmosphericHoverEngine_LargeBlock":
-                    //gridsizespecial = 1.3f;
+                case "LargeGaalsienHoverSuspension_LargeBlock":
+                    _gridSizeAdjustment = 1.3f;
                     break;
 
-                case "HugeGaalsienAtmosphericHoverEngine_LargeBlock":
-                    //gridsizespecial = 1.3f;
+                case "HugeGaalsienHoverSuspension_LargeBlock":
+                    _gridSizeAdjustment = 1.3f;
                     break;
 
-                case "LargeGaalsienArrayAtmosphericHoverEngine_LargeBlock":
-                    //gridsizespecial = 1.3f;
+                case "LargeGaalsienArrayHoverSuspension_LargeBlock":
+                    _gridSizeAdjustment = 1.3f;
                     break;
             }
-            //            MyAPIGateway.Multiplayer.RegisterMessageHandler(HandlerId, Updateclients_Behavior);
 
-            //Load_default(block);
-            //Load_data(block);
-
-            //WaterMod < init here and check also every 100 frames
-            //Checkwatermod();
-            //WaterMod >
+            Load_default(_block);
+            Load_data(_block);
 
             //MyAPIGateway.Utilities.ShowMessage("HoverEngine", "init controls and first color");
+        }
+
+        private void BlockOnEnabledChanged(IMyTerminalBlock b)
+        {
+            ShowStateNextFrame = true;
+        }
+
+        private void Block_IsWorkingChanged(VRage.Game.ModAPI.IMyCubeBlock obj)
+        {
+            ShowStateNextFrame = true;
+        }
+
+        private void CustomInfo(IMyTerminalBlock block, StringBuilder info) //11-2019
+        {
+            try
+            {
+                var grid = block.CubeGrid as MyCubeGrid;
+                info.Append('\n');
+                if (!grid.DampenersEnabled)
+                {
+                    info.Append("Hover Engine is deactivated because Dampeners are not enabled.\nActivate dampeners to use Hover Engines.");
+                }
+            }
+            catch (Exception e)
+            {
+                //na
+            }
         }
     }
 }
