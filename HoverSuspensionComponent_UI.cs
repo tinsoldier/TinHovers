@@ -25,7 +25,7 @@ namespace TinHovers
         public Color m_color1 = new Color(0, 255, 0, 255);
         bool ShowStateNextFrame = true;
 
-        public void Showstate()
+        public void ShowState()
         {
             //MyAPIGateway.Utilities.ShowMessage("HoverEngine", "Showstate1: block:"+_block+" b:"+b);
             if (_block == null) return;

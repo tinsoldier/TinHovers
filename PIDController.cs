@@ -31,7 +31,6 @@ namespace TinHovers
         private readonly double _derivativeGain;
         private readonly double _integralUpperLimit;
         private readonly double _integralLowerLimit;
-        private readonly double _stepsPerSecond;
 
         private double _integral;
         private double _previousError;

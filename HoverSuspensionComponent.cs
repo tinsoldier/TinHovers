@@ -22,7 +22,6 @@ using SpaceEngineers.Game.ModAPI;
 using VRage;
 using VRage.Utils;
 using VRage.Sync;
-using static VRageRender.Utils.MyWingedEdgeMesh;
 using Sandbox.Game.World;
 
 namespace TinHovers
@@ -92,11 +91,11 @@ namespace TinHovers
         private int _forwardRaycastInterval;    // Interval control for reducing the frequency of the secondary raycast under certain conditions
         #endregion
 
-        // Current chosen controller (could be changed at runtime or configured)
+        //// Current chosen controller (could be changed at runtime or configured)
         //private IHoverThrustController _thrustController = new BangBangThrustController();
         private float _maxHoverRange = 30;
 
-        private IHoverThrustController _thrustController = new PIDHoverThrustController(new PIDController(0.5, 0.01, 0.05, 0.5, -0.5), 4f, 0f);
+        private IHoverThrustController _thrustController = new PIDHoverThrustController(new PIDController(1.0, 0.01, 0.1), 2f, 0f);
 
         public void BlockUpdate()
         {
@@ -156,10 +155,12 @@ namespace TinHovers
             {
                 // WIP Soft Landing
                 // If dampeners are off, reduce the target height to zero over time
-                _smoothedTargetHeight -= 0.0075f * (_scalingMultiplier + 1f);
+                _smoothedTargetHeight -= 0.04f * (_scalingMultiplier + 1f);
+                _recalculatedTargetHeight = _smoothedTargetHeight;
                 if (_smoothedTargetHeight < 0)
                 {
                     _smoothedTargetHeight = 0;
+                    _recalculatedTargetHeight = 0;
                 }
                 if (_smoothedTargetHeight == 0)
                 {
@@ -174,7 +175,9 @@ namespace TinHovers
                 // Ground detection raycast
                 _groundRaycastInterval = 0; // Reset and prevent negative values
                 var deltaTime = (_tickCounter - _lastGroundRaycastAtTick) / 60f;
-                var groundForce = CalculateGroundForce(grid, downDirection, speed, deltaTime, out var validSurface, out var distanceToSurface, out var groundRatio);
+                bool validSurface;
+                float distanceToSurface, groundRatio;
+                var groundForce = CalculateGroundForce(grid, downDirection, speed, deltaTime, out validSurface, out distanceToSurface, out groundRatio);
                 _lastGroundForce = groundForce;
                 _lastGroundRaycastAtTick = _tickCounter;
                 _block.ThrustMultiplier = groundRatio; // Limit lateral thrust based on ground ratio (far from ground, less lateral thrust)
@@ -200,8 +203,9 @@ namespace TinHovers
             {
                 //Collision detection in direction of current movement vector
                 _forwardRaycastInterval = 0; // Reset and prevent negative values
-                
-                var collisionForce = CalculateCollisionAvoidanceForce(grid, velocityVector, speed, out var collisionAlert, out var distanceToObstacle);
+                bool collisionAlert;
+                float distanceToObstacle;
+                var collisionForce = CalculateCollisionAvoidanceForce(grid, velocityVector, speed, out collisionAlert, out distanceToObstacle);
                 if(collisionAlert)
                 {
                     _lastGroundForce = Math.Max(_lastGroundForce, collisionForce);
@@ -224,7 +228,7 @@ namespace TinHovers
 
             // Decide where to apply the lift force
             Vector3D liftForceApplicationPoint = _applyForceToCenterOfMass ? grid.Physics.CenterOfMassWorld : _block.GetPosition();
-            Vector3D liftForce = downDirection * _lastGroundForce;
+            Vector3D liftForce = -downDirection * _lastGroundForce;
 
             // Apply forces to the grid
             ApplyGroundForce(grid, liftForce, liftForceApplicationPoint);
@@ -478,7 +482,7 @@ namespace TinHovers
             }
             if (!_initShowstate)
             {
-                Showstate();
+                ShowState();
                 _initShowstate = true;
             }
 
@@ -486,7 +490,7 @@ namespace TinHovers
             if (ShowStateNextFrame)
             {
                 ShowStateNextFrame = false;
-                Showstate();
+                ShowState();
             }
 
             if (!_block.IsWorking) return; // no update if block down, off or damaged
