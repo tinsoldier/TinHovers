@@ -23,6 +23,7 @@ using VRage;
 using VRage.Utils;
 using VRage.Sync;
 using Sandbox.Game.World;
+using VRageRender;
 
 namespace TinHovers
 {
@@ -53,10 +54,6 @@ namespace TinHovers
         private int _lastGroundRaycastAtTick = 0;
 
         private bool _collisionAlert;
-        private bool _hit1OwnGrid;
-        private bool _hit2OwnGrid;
-        private bool _hit1LastCast;
-        private bool _hit2LastCast;
 
         private float _lastGroundForce;
         private float _lastDragForce;
@@ -95,7 +92,9 @@ namespace TinHovers
         //private IHoverThrustController _thrustController = new BangBangThrustController();
         private float _maxHoverRange = 30;
 
-        private IHoverThrustController _thrustController = new PIDHoverThrustController(new PIDController(1.0, 0.01, 0.1), 2f, 0f);
+        private IHoverThrustController _thrustController = new PIDHoverThrustController(new PIDController(2, 0.007, 0.1), 5f, -1f);
+
+        bool checkVelocityOnce = false;
 
         public void BlockUpdate()
         {
@@ -111,7 +110,7 @@ namespace TinHovers
 
             // Down direction of the block (assuming block.WorldMatrix.Down is correct for "forward" in context)
             //Vector3D downDirection = _block.WorldMatrix.Down;
-            Vector3D downDirection = grid.Physics.Gravity.Normalized(); // Use gravity direction as down direction instead of block down facing
+            Vector3D downDirectionNormalized = grid.Physics.Gravity.Normalized(); // Use gravity direction as down direction instead of block down facing
 
             // Get the maximum thrust of the block
             _thrustMax = _block.MaxThrust;
@@ -175,9 +174,10 @@ namespace TinHovers
                 // Ground detection raycast
                 _groundRaycastInterval = 0; // Reset and prevent negative values
                 var deltaTime = (_tickCounter - _lastGroundRaycastAtTick) / 60f;
+
                 bool validSurface;
                 float distanceToSurface, groundRatio;
-                var groundForce = CalculateGroundForce(grid, downDirection, speed, deltaTime, out validSurface, out distanceToSurface, out groundRatio);
+                var groundForce = CalculateGroundForce(grid, downDirectionNormalized, velocityVector, deltaTime, out validSurface, out distanceToSurface, out groundRatio);
                 _lastGroundForce = groundForce;
                 _lastGroundRaycastAtTick = _tickCounter;
                 _block.ThrustMultiplier = groundRatio; // Limit lateral thrust based on ground ratio (far from ground, less lateral thrust)
@@ -187,16 +187,34 @@ namespace TinHovers
                     _downwardDistanceChange = distanceToSurface - _previousDownwardDistance;
                     _previousDownwardDistance = distanceToSurface;
 
-                    if (_downwardDistanceChange > 0) _groundRaycastInterval = 2; //Moving away from surface
-                    if (_averageSpeed < 0.04f && speed < 0.04f) _groundRaycastInterval = 5;
+                    if (_downwardDistanceChange > 0)
+                    {
+                        //Moving away from surface
+                        //_lastGroundForce = 0;
+                        _groundRaycastInterval = 2; 
+                    }
+
+
+                    var gravityDotVelocity = Vector3D.Dot(grid.Physics.Gravity, velocityVector);
+                    var speedInGravityDirection = gravityDotVelocity / grid.Physics.Gravity.Length();
+                    if (distanceToSurface < speedInGravityDirection) //If gravity component of our velocity vector is greater than distance to surface, we're moving towards it too quickly, intervene.
+                    {
+                        //Simple heuristic to predict ground impacts
+                        _collisionAlert = true;
+                        _lastGroundForce *= (float)(speedInGravityDirection / distanceToSurface); // Scale force based on distance to impact
+                    }
+
+                    if (_averageSpeed < 0.04f && speed < 0.04f)
+                    {
+                        _groundRaycastInterval = 5;
+                    }
                 }
                 else
                 {
                     _distanceToSurface = _recalculatedTargetHeight;
                     _previousDownwardDistance = _recalculatedTargetHeight;
-                    _hit1LastCast = false;
 
-                    _groundRaycastInterval = (speed < 50.0f) ? 2 : 1;
+                    _groundRaycastInterval = (speed < 20.0f) ? 2 : 1;
                 }
             }
             else if(!_seesaw && _forwardRaycastInterval-- <= 0)
@@ -228,52 +246,148 @@ namespace TinHovers
 
             // Decide where to apply the lift force
             Vector3D liftForceApplicationPoint = _applyForceToCenterOfMass ? grid.Physics.CenterOfMassWorld : _block.GetPosition();
-            Vector3D liftForce = -downDirection * _lastGroundForce;
+            Vector3D liftForce = -downDirectionNormalized * _lastGroundForce;
 
             // Apply forces to the grid
             ApplyGroundForce(grid, liftForce, liftForceApplicationPoint);
-            ApplyDragForce(grid, _lastDragForce, velocityVector, speed);
+            ApplyDragForce(grid, _lastDragForce, velocityVector, speed, 0.2f);
         }
 
-        private void ApplyDragForce(MyCubeGrid grid, float dragForce, Vector3D velocityVector, float speed)
+        //private void ApplyDragForce(MyCubeGrid grid, float dragForce, Vector3D velocityVector, float speed)
+        //{
+        //    if(speed < 0.01f) return; // Don't apply drag if speed is very low
+
+        //    //TODO: iterate over all of the subgrids and apply drag force based on their proportional mass
+        //    //For now, just do the one grid
+
+        //    Vector3D torque = Vector3D.Zero;
+        //    double maxAcceleration = 9.81 * .25; 
+        //    double maxForce = grid.Mass * maxAcceleration;
+        //    var dragForceVector = -Math.Min(maxForce, dragForce) * (velocityVector / speed); // Apply constant drag force in opposite direction of velocity
+
+        //    grid.Physics.AddForce(MyPhysicsForceType.APPLY_WORLD_FORCE, dragForceVector, grid.Physics.CenterOfMassWorld, torque);
+
+        //    if(_enableDebug)
+        //    {
+        //        var startPoint = _block.GetPosition(); //grid.Physics.CenterOfMassWorld;
+        //        var endPoint = startPoint + dragForceVector;
+        //        var maxForceVector = -maxForce * (velocityVector / speed);
+        //        MyTransparentGeometry.AddLineBillboard(MyStringId.GetOrCompute("Square"),
+        //            Color.White,
+        //            startPoint, dragForceVector, 20, 0.1f);
+        //        MyTransparentGeometry.AddPointBillboard(MyStringId.GetOrCompute("WhiteDot"), Color.Red, startPoint + maxForceVector, radius: 0.25f, angle: 0, blendType: MyBillboard.BlendTypeEnum.AdditiveTop);
+        //    }
+        //}
+
+        /// <summary>
+        /// 
+        /// </summary>
+        private void ApplyDragForce(
+            MyCubeGrid grid,
+            float totalDragForce,
+            Vector3D velocityVector,
+            float speed,
+            float verticalDragRatio)
         {
-            if(speed < 0.01f) return; // Don't apply drag if speed is very low
+            if (speed < 0.01f) return; // Don't apply drag if speed is very low
 
-            //TODO: iterate over all of the subgrids and apply drag force based on their proportional mass
-            //For now, just do the one grid
+            // Gravity direction
+            Vector3D gravityDir = grid.Physics.Gravity.Normalized();
 
-            Vector3D torque = Vector3D.Zero;
-            double maxAcceleration = 9.81; 
-            double maxForce = grid.Mass * maxAcceleration;
-            var dragForceVector = -Math.Min(maxForce, dragForce) * (velocityVector / speed); // Apply constant drag force in opposite direction of velocity
+            // Separate velocity into horizontal and vertical components w.r.t. gravity
+            double verticalSpeed = Vector3D.Dot(velocityVector, gravityDir);
+            Vector3D verticalVelocity = gravityDir * verticalSpeed;
 
-            grid.Physics.AddForce(MyPhysicsForceType.APPLY_WORLD_FORCE, dragForceVector, grid.Physics.CenterOfMassWorld, torque);
+            Vector3D horizontalVelocity = velocityVector - verticalVelocity;
+            double horizontalSpeed = horizontalVelocity.Length();
+
+            // Compute how much drag to apply to horizontal vs vertical
+            float horizontalDragRatio = 1f - verticalDragRatio;
+            float horizontalDragForce = totalDragForce * horizontalDragRatio;
+            float verticalDragForce = totalDragForce * verticalDragRatio;
+
+            // Final drag force vector
+            Vector3D dragForceVector = Vector3D.Zero;
+
+            // 1) Horizontal drag
+            if (horizontalSpeed > 0.01f && horizontalDragForce > 0.01f)
+            {
+                // Opposite the horizontal velocity
+                Vector3D horizDragDir = -horizontalVelocity / horizontalSpeed;
+                Vector3D horizDragVec = horizDragDir * horizontalDragForce;
+                dragForceVector += horizDragVec;
+            }
+
+            // 2) Vertical drag
+            if (Math.Abs(verticalSpeed) > 0.01f && verticalDragForce > 0.01f)
+            {
+                // Opposite the vertical velocity
+                Vector3D vertDragDir = -verticalVelocity / Math.Abs(verticalSpeed);
+                Vector3D vertDragVec = vertDragDir * verticalDragForce;
+                dragForceVector += vertDragVec;
+            }
+
+            // Apply the combined drag force at the center of mass
+            grid.Physics.AddForce(MyPhysicsForceType.APPLY_WORLD_FORCE, dragForceVector, grid.Physics.CenterOfMassWorld, Vector3D.Zero);
+
+            // Debug visualization
+            if (_enableDebug)
+            {
+                Vector3D startPoint = _block.GetPosition();
+                Vector3D endPoint = startPoint + dragForceVector;
+
+                // Draw line for total drag force
+                //MyTransparentGeometry.AddLineBillboard(MyStringId.GetOrCompute("Square"),
+                //    Color.White,
+                //    startPoint, dragForceVector, 20, 0.1f);
+
+                //// Optionally visualize the separate horizontal and vertical drag vectors
+                //if (horizontalSpeed > 0.01f)
+                //{
+                //    Vector3D horizDebugVec = (-horizontalVelocity / horizontalSpeed) * horizontalDragForce;
+                //    MyTransparentGeometry.AddLineBillboard(MyStringId.GetOrCompute("Square"),
+                //        Color.Green,
+                //        startPoint, horizDebugVec, 15, 0.1f);
+                //}
+                //if (Math.Abs(verticalSpeed) > 0.01f)
+                //{
+                //    Vector3D vertDebugVec = -(verticalVelocity / Math.Abs(verticalSpeed)) * verticalDragForce;
+                //    MyTransparentGeometry.AddLineBillboard(MyStringId.GetOrCompute("Square"),
+                //        Color.Red,
+                //        startPoint, vertDebugVec, 15, 0.1f);
+                //}
+            }
         }
+
 
         private float CalculateDrag(MyCubeGrid grid, float groundForceNewtons)
         {
             // Dot product to determine alignment
-            double alignment = Vector3D.Dot(_block.WorldMatrix.Down, grid.Physics.Gravity);
+            double alignment = Vector3D.Dot(_block.WorldMatrix.Down, grid.Physics.Gravity.Normalized());
 
             // Clamp alignment to avoid division by zero or huge spikes
             alignment = MathHelper.Clamp(alignment, 0.1, 1);
 
             // Now inflate the ground force for drag calculation based on alignment
-            float effectiveGroundForceForDrag = (float)(groundForceNewtons / alignment);
+            double penalty = 1.0 / (alignment * alignment);
+            float effectiveGroundForceForDrag = (float)(groundForceNewtons * penalty);
 
             var blockMaxThrust = _block.MaxThrust;
-            // If the ground force necessary to keep block aloft is some multiple higher than the block thrust, apply drag
-            // Apply an exponential ratio of drag force to ground force
+
+            // If the ground force necessary to keep block aloft is higher than the block thrust, apply drag
             if (effectiveGroundForceForDrag > blockMaxThrust)
             {
-                // At 100% thrust, dragForce ~ 0.25 (mild penalty)
-                // At 200% thrust, ratio = 1.0, squared = 1.0 (steep penalty)
-                var dragForce = (float)Math.Pow((effectiveGroundForceForDrag / (blockMaxThrust * 2.0)), 2);
+                var dragForce = effectiveGroundForceForDrag - blockMaxThrust; //Math.Min(effectiveGroundForceForDrag, blockMaxThrust*1);// (float)(effectiveGroundForceForDrag * (effectiveGroundForceForDrag / (blockMaxThrust * 2.0)));
+                dragForce = MathHelper.Clamp(dragForce, 0, blockMaxThrust * 2);
+                if (_enableDebug)
+                    MyTransparentGeometry.AddPointBillboard(MyStringId.GetOrCompute("WhiteDot"), Color.Purple, _block.GetPosition() - grid.Physics.Gravity.Normalized()*10, radius: effectiveGroundForceForDrag / blockMaxThrust, angle: 0, blendType: MyBillboard.BlendTypeEnum.AdditiveTop);
+
                 return dragForce;
             }
 
             return 0f;
         }
+
         #region Duty cycle scratch
         /*
             private int _overThrustTicks = 0;
@@ -311,22 +425,23 @@ namespace TinHovers
         /// Calculates thrust in newtons to apply to the grid to keep it at the target height IFF the hover block is above a valid surface.
         /// </summary>
         /// <returns>Thrust force that should be applied in newtons</returns>
-        private float CalculateGroundForce(MyCubeGrid grid, Vector3D downDirection, float speed, float deltaTime, out bool succesfulRaycast, out float distanceToSurface, out float groundRatio)
+        private float CalculateGroundForce(MyCubeGrid grid, Vector3D downDirectionNormalized, Vector3D velocityVector, float deltaTime, out bool succesfulRaycast, out float distanceToSurface, out float groundRatio)
         {
-            succesfulRaycast = TryGroundRaycast(grid, downDirection, out distanceToSurface, out groundRatio);
+            succesfulRaycast = TryGroundRaycast(grid, downDirectionNormalized, out distanceToSurface, out groundRatio);
             if (!succesfulRaycast)
             {
                 //Hit ourselves or some other invalid surface
-                _hit1LastCast = false;
                 return 0f;
             }
             
             //Successfully hit a hoverable surface
-            _hit1LastCast = true;
+            var changeInDownwardDistance = distanceToSurface - _previousDownwardDistance;
             _previousDownwardDistance = distanceToSurface; // Store the distance for next tick
 
-            float heightError = _recalculatedTargetHeight - distanceToSurface;
-            float deltaError = distanceToSurface - _previousDownwardDistance; // Change in distance since last tick
+            var speedInGravityDirection = (float)Vector3D.Dot(downDirectionNormalized, velocityVector);
+
+            float heightError = _recalculatedTargetHeight - distanceToSurface;// + speedInGravityDirection - changeInDownwardDistance; 
+            //float deltaError = distanceToSurface - _previousDownwardDistance; // Change in distance since last tick
             
             var forceMultiplier = _thrustController.CalculateThrustMultiplier(heightError, deltaTime); //TODO delta time makes sense for a PID, but we're applying forces every tick even if the controller is only running periodically?
             return _block.MaxThrust * forceMultiplier;
@@ -337,15 +452,13 @@ namespace TinHovers
             collisionAlert = TryForwardRaycast(velocity, _recalculatedTargetHeight, _distanceToSurface, speed, out distanceToObstacle);
             if (!collisionAlert)
             {
-                _hit2LastCast = false;
                 return 0f;
             }
 
-            _hit2LastCast = true;
             _previousForwardDistance = distanceToObstacle;
 
             // Calculate force multiplier based on distance to obstacle
-            var forceMultiplier = (1f - (distanceToObstacle / speed)) * 0.5f;
+            var forceMultiplier = (1f - (distanceToObstacle / speed));
             return _block.MaxThrust * forceMultiplier;
         }
 
@@ -358,10 +471,12 @@ namespace TinHovers
             Vector3D endPoint = startPoint + downDirection * _maxHoverRange;
 
             IHitInfo hitInfo;
-            if (MyAPIGateway.Physics.CastRay(startPoint, endPoint, out hitInfo) && IsValidHitEntity(hitInfo))
+            if (MyAPIGateway.Physics.CastRay(startPoint, endPoint, out hitInfo))
             {
+                var isValid = IsValidHitEntity(hitInfo);
+
                 // Debug visualization optional
-                if (_hit1OwnGrid && !MyAPIGateway.Utilities.IsDedicated && _enableDebug)
+                if (!isValid && !MyAPIGateway.Utilities.IsDedicated && _enableDebug)
                 {
                     MyTransparentGeometry.AddLineBillboard(MyStringId.GetOrCompute("Square"), Color.Red * 0.5f, startPoint, hitInfo.Position - startPoint, 1, 0.05f);
                 }
@@ -369,22 +484,25 @@ namespace TinHovers
                 {
                     MyTransparentGeometry.AddLineBillboard(MyStringId.GetOrCompute("Square"), Color.Blue * 0.5f, startPoint, endPoint - startPoint, 1, 0.05f);
                 }
-                
-                distanceToSurface = (float)(_block.GetPosition() - hitInfo.Position).Length();
-                if (distanceToSurface <= _maxHoverRange)
-                {
-                    // From 0 to 30m, always full effectiveness
-                    groundRatio = 1f;
-                }
-                else
-                {
-                    // From 30m to 60m, linearly reduce effectiveness
-                    // (distanceToSurface - _maxHoverRange) will range from 0 at 30m to 30 at 60m.
-                    // Dividing by _maxHoverRange (30m) will yield a range 0 to 1, which we use to scale linearly.
-                    groundRatio = 1f - MathHelper.Clamp((distanceToSurface - _maxHoverRange) / _maxHoverRange, 0f, 1f);
-                }
 
-                return true;
+                if (isValid)
+                {
+                    distanceToSurface = (float)(_block.GetPosition() - hitInfo.Position).Length();
+                    if (distanceToSurface <= _maxHoverRange)
+                    {
+                        // From 0 to 30m, always full effectiveness
+                        groundRatio = 1f;
+                    }
+                    else
+                    {
+                        // From 30m to 60m, linearly reduce effectiveness
+                        // (distanceToSurface - _maxHoverRange) will range from 0 at 30m to 30 at 60m.
+                        // Dividing by _maxHoverRange (30m) will yield a range 0 to 1, which we use to scale linearly.
+                        groundRatio = 1f - MathHelper.Clamp((distanceToSurface - _maxHoverRange) / _maxHoverRange, 0f, 1f);
+                    }
+
+                    return true; 
+                }
             }
 
             distanceToSurface = 0f;
@@ -392,25 +510,31 @@ namespace TinHovers
             return false;
         }
 
-        private bool TryForwardRaycast(Vector3D velocity, float targetHeight, float distanceToSurface, float speed, out float distanceToObstacle)
+        private bool TryForwardRaycast(Vector3D velocityVector, float targetHeight, float distanceToSurface, float speed, out float distanceToObstacle)
         {
             if (speed > 10.0f)
             {
                 Vector3D startPoint = _block.GetPosition() + _block.WorldMatrix.Down * distanceToSurface / 2;
-                Vector3D endPoint = _block.GetPosition() + _block.WorldMatrix.Down * targetHeight + (velocity / 1f);
+                //Vector3D endPoint = _block.GetPosition() + _block.WorldMatrix.Down * targetHeight + velocityVector;
+                Vector3D endPoint = startPoint + velocityVector * 3;
 
                 IHitInfo hitInfo;
-                if (MyAPIGateway.Physics.CastRay(startPoint, endPoint, out hitInfo) && IsValidHitEntity(hitInfo))
+                if (MyAPIGateway.Physics.CastRay(startPoint, endPoint, out hitInfo))
                 {
+                    var isValid = IsValidHitEntity(hitInfo);
+
                     if (_enableDebug)
                     {
                         MyTransparentGeometry.AddLineBillboard(MyStringId.GetOrCompute("Square"),
-                            _hit2OwnGrid ? Color.Red : Color.Blue * 0.5f,
+                            isValid ? Color.Red : Color.Blue * 0.5f,
                             startPoint, endPoint - startPoint, 1, 0.05f);
                     }
 
-                    distanceToObstacle = (float)(_block.GetPosition() - hitInfo.Position).Length();
-                    return true;
+                    if(isValid)
+                    {
+                        distanceToObstacle = (float)(_block.GetPosition() - hitInfo.Position).Length();
+                        return true;
+                    }
                 }
             }
 
@@ -456,7 +580,7 @@ namespace TinHovers
         {
             if (_targetHeight > _smoothedTargetHeight)
             {
-                _smoothedTargetHeight += 0.02f;
+                _smoothedTargetHeight += 0.04f;
             }
             if (_targetHeight < _smoothedTargetHeight)
             {
